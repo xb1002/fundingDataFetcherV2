@@ -3,14 +3,14 @@ from typing import Optional, Tuple, List
 
 # ======================= 请求 DTOs =======================
 @dataclass
-class OHLCVRequest:
+class OHLCVRequestParams:
     symbol: str               # 统一内部symbol,"BTC_USDT"
     timeframe: str            # "1m", "5m", "1h", "4h", "1d", ...
     start_time: Optional[int] = None
     limit: Optional[int] = None
 
 @dataclass
-class FundingRequest:
+class FundingRequestParams:
     symbol: str               # "BTC_USDT"
     start_time: Optional[int] = None
     limit: Optional[int] = None

@@ -1,7 +1,7 @@
 # core/base_adapter.py
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional
-from .dto import OHLCVRequest, FundingRequest, CandleType, FundingRecordType
+from .dto import OHLCVRequestParams, FundingRequestParams, CandleType, FundingRecordType
 import requests
 import time
 import logging
@@ -61,17 +61,17 @@ class ExchangeAdapter(ABC):
         raise Exception("请求失败，未能获取响应。")
 
     @abstractmethod
-    def fetch_price_ohlcv(self, req: OHLCVRequest) -> List[CandleType]:
+    def fetch_price_ohlcv(self, req: OHLCVRequestParams) -> List[CandleType]:
         ...
 
     @abstractmethod
-    def fetch_index_ohlcv(self, req: OHLCVRequest) -> List[CandleType]:
+    def fetch_index_ohlcv(self, req: OHLCVRequestParams) -> List[CandleType]:
         ...
 
     @abstractmethod
-    def fetch_premium_index_ohlcv(self, req: OHLCVRequest) -> List[CandleType]:
+    def fetch_premium_index_ohlcv(self, req: OHLCVRequestParams) -> List[CandleType]:
         ...
 
     @abstractmethod
-    def fetch_funding_history(self, req: FundingRequest) -> List[FundingRecordType]:
+    def fetch_funding_history(self, req: FundingRequestParams) -> List[FundingRecordType]:
         ...
