@@ -37,7 +37,7 @@ BITGET_TIMEFRAME_MAP: Dict[str, Tuple[str, int]] = {
 BITGET_ENDPOINTS = {
     "price_ohlcv": "/api/mix/v1/market/history-candles",
     "index_ohlcv": "/api/mix/v1/market/history-index-candles",
-    "premium_index_ohlcv": "/api/mix/v1/market/history-mark-candles",
+    "premium_index_ohlcv": None,  # Bitget does not provide premium index OHLCV endpoint
     "funding_history": "/api/mix/v1/market/history-fundRate",
 }
 
@@ -75,7 +75,7 @@ class BitgetAdapter(ExchangeAdapter):
         return self._fetch_candle_series("index_ohlcv", req)
 
     def fetch_premium_index_ohlcv(self, req: OHLCVRequestParams) -> List[CandleType]:
-        return self._fetch_candle_series("premium_index_ohlcv", req)
+        raise NotImplementedError("Bitget 不提供永续合约的溢价指数K线数据接口，无法获取该数据。")
 
     def fetch_funding_history(self, req: FundingRequestParams) -> List[FundingRecordType]:
         endpoint = self.endpoint_dict["funding_history"]
