@@ -168,27 +168,32 @@ class BinanceAdapter(ExchangeAdapter):
 
 if __name__ == "__main__":
     import pandas as pd
+    import datetime
+
+    start_time = int(datetime.datetime(2025,10,1).timestamp() * 1000)
+
     adapter = BinanceAdapter()
     ohlcv_req_params = OHLCVRequestParams(
         symbol="BTCUSDT",
         timeframe="1m",
-        start_time=1695897600000,
+        start_time=start_time,
         limit=5
     )
     funding_req_params = FundingRequestParams(
         symbol="BTCUSDT",
-        start_time=1695897600000,
+        start_time=start_time,
         limit=5
     )
-    price_ohlcv = adapter.fetch_price_ohlcv(ohlcv_req_params)
-    index_ohlcv = adapter.fetch_index_ohlcv(ohlcv_req_params)
-    premium_index_ohlcv = adapter.fetch_premium_index_ohlcv(ohlcv_req_params)
-    funding_history = adapter.fetch_funding_history(funding_req_params)
+    
     print("Price OHLCV:")
+    price_ohlcv = adapter.fetch_price_ohlcv(ohlcv_req_params)
     print(pd.DataFrame(price_ohlcv, columns=["open_time", "open", "high", "low", "close", "volume"]))
     print("\nIndex OHLCV:")
+    index_ohlcv = adapter.fetch_index_ohlcv(ohlcv_req_params)
     print(pd.DataFrame(index_ohlcv, columns=["open_time", "open", "high", "low", "close", "volume"]))
     print("\nPremium Index OHLCV:")
+    premium_index_ohlcv = adapter.fetch_premium_index_ohlcv(ohlcv_req_params)
     print(pd.DataFrame(premium_index_ohlcv, columns=["open_time", "open", "high", "low", "close", "volume"]))
     print("\nFunding History:")
+    funding_history = adapter.fetch_funding_history(funding_req_params)
     print(pd.DataFrame(funding_history, columns=["fundingTime", "fundingRate"]))
