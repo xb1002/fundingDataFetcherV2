@@ -49,6 +49,11 @@ class DataClient:
 
         return self._adapters[exchange]
 
+    def fetch_markets(self, exchange: str) -> List[str]:
+        """获取交易所支持的永续合约交易对列表"""
+        adapter = self._get_adapter(exchange)
+        return adapter.fetch_markets()
+
     def fetch_price_ohlcv(
         self,
         exchange: str,
@@ -144,6 +149,10 @@ if __name__ == "__main__":
     )
 
     exchange = "binance" # options: binance, okx, bybit, bitget, gate
+
+    print("Fetching Markets:")
+    markets = data_client.fetch_markets(exchange)
+    print(markets)
 
     print("Fetching Price OHLCV Data:")
     res = data_client.fetch_price_ohlcv(exchange, ohlcv_req_params)

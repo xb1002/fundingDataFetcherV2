@@ -63,6 +63,30 @@ class BitgetAdapter(ExchangeAdapter):
         self.endpoint_dict = BITGET_ENDPOINTS
         self.req_max_limit = BITGET_REQ_MAX_LIMIT
 
+    def fetch_markets(self) -> List[str]:
+        endpoint = "/api/mix/v1/market/contracts"
+        params = {"productType": "umcbl"}
+        raw = self.make_request(
+            url=f"{self.base_url}{endpoint}",
+            params=params,
+        )
+        if not isinstance(raw, dict):
+            raise ValueError("Unexpected response format from Bitget contracts endpoint")
+        if raw.get("code") != "00000":
+            msg = raw.get("msg", "Unknown Bitget API error")
+            raise RuntimeError(f"Bitget API error {raw.get('code')}: {msg}")
+        markets: List[str] = []
+        for item in raw.get("data") or []:
+            status = (item.get("status") or "").lower()
+            if status and status not in ("online", "trading"):
+                continue
+            base = (item.get("baseCoin") or "").upper()
+            quote = (item.get("quoteCoin") or "").upper()
+            if not base or not quote:
+                continue
+            markets.append(f"{base}_{quote}")
+        return sorted(set(markets))
+
     def _map_timeframe(self, tf: str) -> Tuple[str, int]:
         if tf not in BITGET_TIMEFRAME_MAP:
             raise ValueError(f"Unsupported timeframe for Bitget: {tf}")
@@ -255,6 +279,11 @@ if __name__ == "__main__":
         start_time=start_time,
         limit=10,
     )
+
+    print("Markets:")
+    markets = adapter.fetch_markets()
+    print(markets)
+
 
     print("Price OHLCV:")
     price_ohlcv = adapter.fetch_price_ohlcv(ohlcv_req_params)

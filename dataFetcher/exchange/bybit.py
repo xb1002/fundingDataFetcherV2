@@ -54,6 +54,28 @@ class BybitAdapter(ExchangeAdapter):
         self.req_max_limit = BYBIT_REQ_MAX_LIMIT
         self.default_category = "linear"
 
+    def fetch_markets(self) -> List[str]:
+        endpoint = "/v5/market/instruments-info"
+        params = {"category": self.default_category}
+        raw = self.make_request(
+            url=f"{self.base_url}{endpoint}",
+            params=params,
+        )
+        self._ensure_success(raw)
+        result = raw.get("result", {}) if isinstance(raw, dict) else {}
+        instruments = result.get("list", []) or []
+        markets: List[str] = []
+        for item in instruments:
+            status = (item.get("status") or "").lower()
+            if status and status not in ("trading", "listed"):
+                continue
+            base = (item.get("baseCoin") or "").upper()
+            quote = (item.get("quoteCoin") or "").upper()
+            if not base or not quote:
+                continue
+            markets.append(f"{base}_{quote}")
+        return sorted(set(markets))
+
     def _map_timeframe(self, tf: str) -> str:
         if tf not in BYBIT_TIMEFRAME_MAP:
             raise ValueError(f"Unsupported timeframe for Bybit: {tf}")
@@ -219,6 +241,10 @@ if __name__ == "__main__":
         start_time=start_time,
         limit=5,
     )
+
+    print("Markets:")
+    markets = adapter.fetch_markets()
+    print(markets)
 
     # This main block is for manual verification when network access is available.
     print("Price OHLCV:")

@@ -79,6 +79,33 @@ class OKXAdapter(ExchangeAdapter):
         self.endpoint_dict = OKX_ENDPOINTS
         self.req_max_limit = OKX_REQ_MAX_LIMIT
 
+    def fetch_markets(self) -> List[str]:
+        endpoint = "/api/v5/public/instruments"
+        raw = self.make_request(
+            url=f"{self.base_url}{endpoint}",
+            params={"instType": "SWAP"},
+        )
+        data = raw.get("data", []) if isinstance(raw, dict) else []
+        markets: List[str] = []
+        for item in data:
+            state = (item.get("state") or "").lower()
+            if state and state not in ("live", "listed", "trading"):
+                continue
+            inst_id = item.get("instId")
+            if not inst_id:
+                continue
+            base = (item.get("baseCcy") or "").upper()
+            quote = (item.get("quoteCcy") or "").upper()
+            if not base or not quote:
+                parts = inst_id.split("-")
+                if len(parts) >= 2:
+                    base = base or parts[0].upper()
+                    quote = quote or parts[1].upper()
+            if not base or not quote:
+                continue
+            markets.append(f"{base}_{quote}")
+        return sorted(set(markets))
+
     def _map_timeframe(self, tf: str) -> str:
         if tf not in OKX_TIMEFRAME_MAP:
             raise ValueError(f"Unsupported timeframe for OKX: {tf}")
@@ -254,6 +281,10 @@ if __name__ == "__main__":
         start_time=start_time,
         limit=5,
     )
+
+    print("Markets:")
+    markets = adapter.fetch_markets()
+    print(markets)
     
     print("Price OHLCV:")
     price_ohlcv = adapter.fetch_price_ohlcv(ohlcv_req_params)

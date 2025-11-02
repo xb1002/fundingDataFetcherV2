@@ -59,6 +59,10 @@ class ExchangeAdapter(ABC):
                 raise Exception("响应不是有效的JSON格式。")
         
         raise Exception("请求失败，未能获取响应。")
+    
+    @abstractmethod
+    def fetch_markets(self) -> List[str]: # 返回交易对列表
+        ...
 
     @abstractmethod
     def fetch_price_ohlcv(self, req: OHLCVRequestParams) -> List[CandleType]:

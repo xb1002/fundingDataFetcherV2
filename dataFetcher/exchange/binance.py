@@ -44,6 +44,24 @@ class BinanceAdapter(ExchangeAdapter):
         self.endpoint_dict = BINANCE_ENDPOINTS
         self.req_max_limit = BINANCE_REQ_MAX_LIMIT
 
+    def fetch_markets(self) -> List[str]:
+        endpoint = "/fapi/v1/exchangeInfo"
+        raw = self.make_request(
+            url=f"{self.base_url}{endpoint}",
+        )
+        symbols = []
+        for symbol_info in raw.get("symbols", []):
+            if symbol_info.get("contractType") != "PERPETUAL":
+                continue
+            if symbol_info.get("status") != "TRADING":
+                continue
+            base = symbol_info.get("baseAsset")
+            quote = symbol_info.get("quoteAsset")
+            if not base or not quote:
+                continue
+            symbols.append(f"{base.upper()}_{quote.upper()}")
+        return sorted(set(symbols))
+
     def _map_timeframe(self, tf: str) -> str:
         return BINANCE_TIMEFRAME_MAP[tf]
 
@@ -184,6 +202,10 @@ if __name__ == "__main__":
         start_time=start_time,
         limit=5
     )
+    
+    print("Available Markets:")
+    markets = adapter.fetch_markets()
+    print(markets)
     
     print("Price OHLCV:")
     price_ohlcv = adapter.fetch_price_ohlcv(ohlcv_req_params)

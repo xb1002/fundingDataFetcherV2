@@ -56,6 +56,28 @@ class GateAdapter(ExchangeAdapter):
         self.endpoint_dict = GATE_ENDPOINTS
         self.req_max_limit = GATE_REQ_MAX_LIMIT
 
+    def fetch_markets(self) -> List[str]:
+        endpoint = "/futures/usdt/contracts"
+        raw = self.make_request(
+            url=f"{self.base_url}{endpoint}",
+        )
+        contracts = raw if isinstance(raw, list) else raw.get("data", [])
+        markets: List[str] = []
+        for item in contracts or []:
+            if item.get("in_delisting"):
+                continue
+            state = (item.get("state") or "").lower()
+            if state and state not in ("open", "trading", "running"):
+                continue
+            settle = (item.get("settle") or "").upper()
+            if settle and settle != "USDT":
+                continue
+            name = item.get("name")
+            if not name:
+                continue
+            markets.append(name.replace("-", "_").upper())
+        return sorted(set(markets))
+
     # -------- Public methods -------- #
     def _parse_klines(self, raw) -> List[CandleType]:
         candles = []
@@ -195,6 +217,10 @@ if __name__ == "__main__":
         start_time=start_time,
         limit=10,
     )
+
+    print("Markets:")
+    markets = adapter.fetch_markets()
+    print(markets)
 
     print("Price OHLCV:")
     price = adapter.fetch_price_ohlcv(ohlcv_req)
