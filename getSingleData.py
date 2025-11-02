@@ -254,6 +254,75 @@ def parse_data_types(arg_value: Optional[str]) -> List[str]:
     return data_types
 
 
+def get_markets_cache_path(base_dir: Path, exchange: str) -> Path:
+    return base_dir / exchange / "markets.csv"
+
+
+def read_cached_markets(cache_path: Path) -> Optional[List[str]]:
+    if not cache_path.exists():
+        return None
+    try:
+        with cache_path.open("r", newline="", encoding="utf-8") as fp:
+            reader = csv.reader(fp)
+            markets: List[str] = []
+            for row in reader:
+                if not row:
+                    continue
+                symbol = row[0].strip()
+                if not symbol or symbol.lower() == "symbol":
+                    continue
+                markets.append(symbol.upper())
+        if markets:
+            return markets
+        return None
+    except Exception as exc:  # pragma: no cover
+        logging.warning("Failed to read cached markets from %s: %s", cache_path, exc)
+        return None
+
+
+def save_markets(cache_path: Path, markets: Sequence[str]) -> None:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    unique_sorted = sorted({symbol.upper() for symbol in markets})
+    with cache_path.open("w", newline="", encoding="utf-8") as fp:
+        writer = csv.writer(fp)
+        writer.writerow(["symbol"])
+        for symbol in unique_sorted:
+            writer.writerow([symbol])
+
+
+def ensure_exchange_markets(
+    base_dir: Path,
+    exchange: str,
+    allow_from_cache: bool,
+) -> Tuple[List[str], Path]:
+    cache_path = get_markets_cache_path(base_dir, exchange)
+    markets: Optional[List[str]] = None
+    if allow_from_cache:
+        markets = read_cached_markets(cache_path)
+        if markets is not None:
+            logging.info(
+                "[%s] Loaded %d markets from cache %s",
+                exchange,
+                len(markets),
+                cache_path,
+            )
+            return markets, cache_path
+
+    logging.info("[%s] Fetching markets from exchange API", exchange)
+    fetched = data_client.fetch_markets(exchange)
+    markets = sorted({symbol.upper() for symbol in fetched})
+    if not markets:
+        raise ValueError(f"No markets returned for exchange '{exchange}'")
+    save_markets(cache_path, markets)
+    logging.info(
+        "[%s] Saved %d markets to %s",
+        exchange,
+        len(markets),
+        cache_path,
+    )
+    return markets, cache_path
+
+
 def get_timeframe_ms(timeframe: str) -> int:
     if timeframe not in TIMEFRAME_TO_MS:
         supported = ", ".join(sorted(TIMEFRAME_TO_MS.keys()))
@@ -796,6 +865,27 @@ def process_exchange(
     allow_from_cache: bool,
     flush_threshold: int,
 ) -> List[Dict[str, object]]:
+    normalized_symbol = symbol.replace("-", "_").upper()
+    try:
+        markets, markets_cache_path = ensure_exchange_markets(
+            base_dir,
+            exchange,
+            allow_from_cache,
+        )
+    except Exception as exc:
+        logging.exception("[%s] Failed to prepare market list: %s", exchange, exc)
+        return []
+
+    market_set = set(markets)
+    if normalized_symbol not in market_set:
+        logging.warning(
+            "[%s] Symbol %s is not tradable on this exchange (markets cached at %s); skipping download",
+            exchange,
+            normalized_symbol,
+            markets_cache_path,
+        )
+        return []
+
     exchange_results: List[Dict[str, object]] = []
     for data_type in data_types:
         try:
