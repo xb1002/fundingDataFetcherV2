@@ -122,6 +122,7 @@ class GateAdapter(ExchangeAdapter):
         }
         if req.start_time is not None:
             params["from"] = int(req.start_time // 1000)
+            params["to"] = int((req.start_time + params["limit"] * self._map_timeframe(req.timeframe)[1]) // 1000)
 
         raw = self.make_request(
             url=f"{self.base_url}{endpoint}",
@@ -139,6 +140,7 @@ class GateAdapter(ExchangeAdapter):
         }
         if req.start_time is not None:
             params["from"] = int(req.start_time // 1000)
+            params["to"] = int((req.start_time + params["limit"] * GATE_FUNDING_INTERVAL_MS) // 1000)
 
         raw = self.make_request(
             url=f"{self.base_url}{endpoint}",
@@ -152,6 +154,7 @@ class GateAdapter(ExchangeAdapter):
             record: FundingRecordType = (funding_time_ms, funding_rate)
             funding_records.append(record)
 
+        funding_records.sort(key=lambda x: x[0])
         return funding_records
         
 
