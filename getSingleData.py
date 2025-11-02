@@ -1,5 +1,6 @@
 import argparse
 import csv
+import io
 import logging
 import os
 import random
@@ -8,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 try:
     from zoneinfo import ZoneInfo
@@ -66,6 +67,142 @@ class CacheFileInfo:
     start_ms: int
     end_ms: int
     timeframe: Optional[str] = None
+
+
+def get_output_directory(
+    base_dir: Path,
+    exchange: str,
+    data_type: str,
+    symbol: str,
+    timeframe: Optional[str],
+) -> Path:
+    if data_type == "funding_rate":
+        directory = base_dir / exchange / "funding_rate" / symbol
+    else:
+        if timeframe is None:
+            raise ValueError("Timeframe is required for OHLCV data.")
+        directory = base_dir / exchange / data_type / symbol / timeframe
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+class RangeFileWriter:
+    def __init__(
+        self,
+        base_dir: Path,
+        exchange: str,
+        data_type: str,
+        symbol: str,
+        timeframe: Optional[str],
+        range_start: int,
+        range_end: int,
+        flush_threshold: int,
+        chunk_logger: Optional[Callable[[Dict[str, object]], None]] = None,
+    ) -> None:
+        self.base_dir = base_dir
+        self.exchange = exchange
+        self.data_type = data_type
+        self.symbol = symbol
+        self.timeframe = timeframe
+        self.range_start = range_start
+        self.range_end = range_end
+        self.flush_threshold = max(int(flush_threshold), 1)
+
+        self.directory = get_output_directory(base_dir, exchange, data_type, symbol, timeframe)
+
+        self.current_rows: List[Tuple] = []
+        self.current_bytes: int = 0
+        self.current_start: Optional[int] = None
+        self.current_end: Optional[int] = None
+        self.total_rows: int = 0
+        self.chunks: List[Dict[str, object]] = []
+        self.chunk_logger = chunk_logger
+
+    def _row_byte_size(self, row: Tuple) -> int:
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(row)
+        return len(buf.getvalue().encode("utf-8"))
+
+    def _write_header(self, writer: csv.writer) -> None:
+        if self.data_type == "funding_rate":
+            writer.writerow(["funding_time", "funding_rate"])
+        else:
+            writer.writerow(["timestamp", "open", "high", "low", "close", "volume"])
+
+    def _finalize_chunk(self) -> None:
+        if not self.current_rows:
+            return
+        start_ts = self.current_start
+        end_ts = self.current_end
+        if start_ts is None or end_ts is None:
+            return
+
+        final_path = build_output_path(
+            self.base_dir,
+            self.exchange,
+            self.data_type,
+            self.symbol,
+            self.timeframe,
+            start_ts,
+            end_ts,
+        )
+        if final_path.exists():
+            try:
+                final_path.unlink()
+            except OSError:
+                pass
+        with final_path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            self._write_header(writer)
+            writer.writerows(self.current_rows)
+
+        rows_written = len(self.current_rows)
+        self.total_rows += rows_written
+        chunk_index = len(self.chunks) + 1
+        chunk_info = {
+            "path": str(final_path),
+            "rows": rows_written,
+            "start": start_ts,
+            "end": end_ts,
+            "chunk_index": chunk_index,
+        }
+        self.chunks.append(chunk_info)
+        if self.chunk_logger:
+            try:
+                self.chunk_logger(chunk_info)
+            except Exception as exc:  # pragma: no cover
+                logging.debug("Chunk logger raised %s", exc)
+
+        self.current_rows = []
+        self.current_bytes = 0
+        self.current_start = None
+        self.current_end = None
+
+    def add_rows(self, rows: List[Tuple]) -> None:
+        for row in rows:
+            if self.current_start is None:
+                self.current_start = row[0]
+            self.current_end = row[0]
+            self.current_rows.append(row)
+            self.current_bytes += self._row_byte_size(row)
+            if self.current_bytes >= self.flush_threshold:
+                self._finalize_chunk()
+
+    def finalize(self) -> None:
+        self._finalize_chunk()
+
+    def get_stats(self) -> Tuple[int, Optional[int], Optional[int]]:
+        if not self.chunks:
+            return 0, None, None
+        start_candidates = [chunk.get("start") for chunk in self.chunks if chunk.get("start") is not None]
+        end_candidates = [chunk.get("end") for chunk in self.chunks if chunk.get("end") is not None]
+        start = min(start_candidates) if start_candidates else None
+        end = max(end_candidates) if end_candidates else None
+        return self.total_rows, start, end
+
+    def get_chunks(self) -> List[Dict[str, object]]:
+        return list(self.chunks)
 
 
 def parse_bool(value: str) -> bool:
@@ -185,6 +322,15 @@ def adjust_for_timeframe(ranges: Sequence[Tuple[int, int]], timeframe_ms: int) -
     return adjusted
 
 
+def estimate_points(ranges: Sequence[Tuple[int, int]], step_ms: int) -> int:
+    total = 0
+    for start, end in ranges:
+        if end < start:
+            continue
+        total += ((end - start) // step_ms) + 1
+    return total
+
+
 def parse_cache_filename(filename: str, data_type: str) -> Optional[CacheFileInfo]:
     stem = filename[:-4] if filename.endswith(".csv") else filename
     if data_type == "funding_rate":
@@ -251,71 +397,17 @@ def discover_cache_files(
     return cache_files
 
 
-def read_ohlcv_csv(path: Path) -> List[Tuple[int, float, float, float, float, float]]:
-    records: List[Tuple[int, float, float, float, float, float]] = []
-    with path.open("r", newline="", encoding="utf-8") as handle:
-        reader = csv.reader(handle)
-        next(reader, None)  # skip header if present
-        for row in reader:
-            if len(row) < 6:
-                continue
-            try:
-                records.append(
-                    (
-                        int(row[0]),
-                        float(row[1]),
-                        float(row[2]),
-                        float(row[3]),
-                        float(row[4]),
-                        float(row[5]),
-                    )
-                )
-            except ValueError:
-                continue
-    return records
-
-
-def read_funding_csv(path: Path) -> List[Tuple[int, float]]:
-    records: List[Tuple[int, float]] = []
-    with path.open("r", newline="", encoding="utf-8") as handle:
-        reader = csv.reader(handle)
-        next(reader, None)
-        for row in reader:
-            if len(row) < 2:
-                continue
-            try:
-                records.append((int(row[0]), float(row[1])))
-            except ValueError:
-                continue
-    return records
-
-
-def load_cached_dataset(
+def collect_cached_ranges(
     base_dir: Path,
     exchange: str,
     data_type: str,
     symbol: str,
     timeframe: Optional[str],
-    start_ms: int,
-    end_ms: int,
-) -> Tuple[List[Tuple], List[Tuple[int, int]], List[Path]]:
-    cached_records: List[Tuple] = []
-    cached_ranges: List[Tuple[int, int]] = []
-    cached_files: List[Path] = []
+) -> List[Tuple[int, int]]:
+    ranges: List[Tuple[int, int]] = []
     for info in discover_cache_files(base_dir, exchange, data_type, symbol, timeframe):
-        if not ranges_overlap(info.start_ms, info.end_ms, start_ms, end_ms):
-            continue
-        cached_files.append(info.path)
-        records = (
-            read_funding_csv(info.path)
-            if data_type == "funding_rate"
-            else read_ohlcv_csv(info.path)
-        )
-        if not records:
-            continue
-        cached_records.extend(records)
-        cached_ranges.append((max(start_ms, info.start_ms), min(end_ms, info.end_ms)))
-    return cached_records, cached_ranges, cached_files
+        ranges.append((info.start_ms, info.end_ms))
+    return ranges
 
 
 def resolve_max_limit(adapter, key: str, default: int = 1000) -> int:
@@ -333,9 +425,12 @@ def download_ohlcv_batches(
     ranges: Sequence[Tuple[int, int]],
     max_limit: int,
     timeframe_ms: int,
-) -> List[Tuple[int, float, float, float, float, float]]:
+    chunk_cb: Optional[Callable[[List[Tuple[int, float, float, float, float, float]]], None]] = None,
+    progress_cb: Optional[Callable[[int, Optional[int], Optional[int], int], None]] = None,
+    expected_total: Optional[int] = None,
+) -> int:
     fetcher = getattr(data_client, method_name)
-    downloaded: List[Tuple[int, float, float, float, float, float]] = []
+    total_downloaded = 0
     for range_start, range_end in ranges:
         cursor = range_start
         while cursor <= range_end:
@@ -368,14 +463,24 @@ def download_ohlcv_batches(
                 )
                 break
             filtered = [row for row in batch if range_start <= row[0] <= range_end]
-            downloaded.extend(filtered)
+            if filtered:
+                total_downloaded += len(filtered)
+                if chunk_cb:
+                    chunk_cb(filtered)
+            if progress_cb:
+                latest_ts: Optional[int] = None
+                if filtered:
+                    latest_ts = filtered[-1][0]
+                elif batch:
+                    latest_ts = batch[-1][0]
+                progress_cb(total_downloaded, expected_total, latest_ts, len(filtered))
             time.sleep(random.uniform(0.1, 0.2))
             progress_ts = max(row[0] for row in batch)
             if progress_ts <= cursor:
                 cursor += timeframe_ms * max(1, len(batch))
             else:
                 cursor = progress_ts + timeframe_ms
-    return downloaded
+    return total_downloaded
 
 
 def download_funding_batches(
@@ -383,8 +488,11 @@ def download_funding_batches(
     symbol: str,
     ranges: Sequence[Tuple[int, int]],
     max_limit: int,
-) -> List[Tuple[int, float]]:
-    downloaded: List[Tuple[int, float]] = []
+    chunk_cb: Optional[Callable[[List[Tuple[int, float]]], None]] = None,
+    progress_cb: Optional[Callable[[int, Optional[int], Optional[int], int], None]] = None,
+    expected_total: Optional[int] = None,
+) -> int:
+    total_downloaded = 0
     for range_start, range_end in ranges:
         cursor = range_start
         while cursor <= range_end:
@@ -412,28 +520,25 @@ def download_funding_batches(
                 )
                 break
             filtered = [row for row in batch if range_start <= row[0] <= range_end]
-            downloaded.extend(filtered)
+            if filtered:
+                total_downloaded += len(filtered)
+                if chunk_cb:
+                    chunk_cb(filtered)
+            if progress_cb:
+                latest_ts: Optional[int] = None
+                if filtered:
+                    latest_ts = filtered[-1][0]
+                elif batch:
+                    latest_ts = batch[-1][0]
+                progress_cb(total_downloaded, expected_total, latest_ts, len(filtered))
             time.sleep(random.uniform(0.1, 0.2))
             progress_ts = max(row[0] for row in batch)
             if progress_ts <= cursor:
                 cursor += 1
             else:
                 cursor = progress_ts + 1
-    return downloaded
+    return total_downloaded
 
-
-def merge_records(
-    cached: List[Tuple],
-    downloaded: List[Tuple],
-) -> List[Tuple]:
-    combined: Dict[int, Tuple] = {}
-    for record in cached:
-        ts = record[0]
-        combined[ts] = record
-    for record in downloaded:
-        ts = record[0]
-        combined[ts] = record
-    return [combined[key] for key in sorted(combined.keys())]
 
 
 def build_output_path(
@@ -457,19 +562,6 @@ def build_output_path(
     return directory / filename
 
 
-def write_dataset(path: Path, data_type: str, records: List[Tuple]) -> None:
-    if not records:
-        return
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
-        if data_type == "funding_rate":
-            writer.writerow(["funding_time", "funding_rate"])
-        else:
-            writer.writerow(["timestamp", "open", "high", "low", "close", "volume"])
-        for row in records:
-            writer.writerow(row)
-
-
 def process_dataset(
     base_dir: Path,
     exchange: str,
@@ -479,97 +571,217 @@ def process_dataset(
     start_ms: int,
     end_ms: int,
     allow_from_cache: bool,
+    flush_threshold: int,
 ) -> Dict[str, object]:
     config = DATA_TYPE_CONFIG[data_type]
     adapter = data_client._get_adapter(exchange)
     max_limit = resolve_max_limit(adapter, config["limit_key"])
-    cached_records: List[Tuple] = []
+
     cached_ranges: List[Tuple[int, int]] = []
-    cached_files: List[Path] = []
     if allow_from_cache:
-        cached_records, cached_ranges, cached_files = load_cached_dataset(
+        cached_ranges = collect_cached_ranges(
             base_dir,
             exchange,
             data_type,
             symbol,
             timeframe if config["is_ohlcv"] else None,
-            start_ms,
-            end_ms,
         )
+
     missing_ranges = (
         subtract_ranges(start_ms, end_ms, cached_ranges)
         if allow_from_cache
         else [(start_ms, end_ms)]
     )
 
-    downloaded: List[Tuple] = []
-    if config["is_ohlcv"]:
-        timeframe_ms = get_timeframe_ms(timeframe)
-        ranges = adjust_for_timeframe(missing_ranges, timeframe_ms)
-        if ranges:
-            downloaded = download_ohlcv_batches(
+    total_downloaded = 0
+    output_paths: List[str] = []
+    output_ranges: List[Tuple[int, int]] = []
+    range_details: List[Dict[str, object]] = []
+
+    if not missing_ranges:
+        logging.info(
+            "[%s][%s] no download needed; requested range fully covered by cache",
+            exchange,
+            data_type,
+        )
+
+    total_segments = len(missing_ranges)
+
+    for idx, (segment_start, segment_end) in enumerate(missing_ranges, start=1):
+        def chunk_logger(details: Dict[str, object]) -> None:
+            logging.info(
+                "[%s][%s][segment %d/%d] saved chunk #%s to %s (rows=%s range=%s-%s)",
+                exchange,
+                data_type,
+                idx,
+                total_segments,
+                details.get("chunk_index"),
+                details.get("path"),
+                details.get("rows"),
+                details.get("start"),
+                details.get("end"),
+            )
+
+        writer = RangeFileWriter(
+            base_dir,
+            exchange,
+            data_type,
+            symbol,
+            timeframe if config["is_ohlcv"] else None,
+            segment_start,
+            segment_end,
+            flush_threshold,
+            chunk_logger=chunk_logger,
+        )
+
+        def chunk_handler(rows: List[Tuple]) -> None:
+            writer.add_rows(rows)
+
+        def format_ts(ts: Optional[int]) -> str:
+            if ts is None:
+                return "n/a"
+            return datetime.fromtimestamp(ts / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+        if config["is_ohlcv"]:
+            timeframe_ms = get_timeframe_ms(timeframe)
+            aligned_ranges = adjust_for_timeframe([(segment_start, segment_end)], timeframe_ms)
+            if not aligned_ranges:
+                logging.info(
+                    "[%s][%s][segment %d/%d] skipping empty aligned range %s-%s",
+                    exchange,
+                    data_type,
+                    idx,
+                    total_segments,
+                    segment_start,
+                    segment_end,
+                )
+                continue
+            expected_total = estimate_points(aligned_ranges, timeframe_ms)
+            if expected_total <= 0:
+                expected_total = None
+
+            def progress_logger(downloaded_count: int, expected: Optional[int], latest_ts: Optional[int], batch_size: int) -> None:
+                if expected:
+                    percent = min(100.0, (downloaded_count / expected) * 100) if expected else 0.0
+                    logging.info(
+                        "[%s][%s][segment %d/%d] progress %.1f%% (%d/%d) batch=%d latest=%s",
+                        exchange,
+                        data_type,
+                        idx,
+                        total_segments,
+                        percent,
+                        downloaded_count,
+                        expected,
+                        batch_size,
+                        format_ts(latest_ts),
+                    )
+                else:
+                    logging.info(
+                        "[%s][%s][segment %d/%d] progress downloaded=%d batch=%d latest=%s",
+                        exchange,
+                        data_type,
+                        idx,
+                        total_segments,
+                        downloaded_count,
+                        batch_size,
+                        format_ts(latest_ts),
+                    )
+
+            logging.info(
+                "[%s][%s][segment %d/%d] downloading aligned range %s-%s%s",
+                exchange,
+                data_type,
+                idx,
+                total_segments,
+                aligned_ranges[0][0],
+                aligned_ranges[-1][1],
+                f", expected ~{expected_total} rows" if expected_total else "",
+            )
+            segment_rows = download_ohlcv_batches(
                 exchange,
                 config["method"],
                 symbol,
                 timeframe,
-                ranges,
+                aligned_ranges,
                 max_limit,
                 timeframe_ms,
+                chunk_cb=chunk_handler,
+                progress_cb=progress_logger,
+                expected_total=expected_total,
             )
-    else:
-        if missing_ranges:
-            downloaded = download_funding_batches(
+        else:
+            def progress_logger(downloaded_count: int, expected: Optional[int], latest_ts: Optional[int], batch_size: int) -> None:
+                logging.info(
+                    "[%s][%s][segment %d/%d] progress downloaded=%d batch=%d latest=%s",
+                    exchange,
+                    data_type,
+                    idx,
+                    total_segments,
+                    downloaded_count,
+                    batch_size,
+                    format_ts(latest_ts),
+                )
+
+            logging.info(
+                "[%s][%s][segment %d/%d] downloading range %s-%s",
+                exchange,
+                data_type,
+                idx,
+                total_segments,
+                segment_start,
+                segment_end,
+            )
+            segment_rows = download_funding_batches(
                 exchange,
                 symbol,
-                missing_ranges,
+                [(segment_start, segment_end)],
                 max_limit,
+                chunk_cb=chunk_handler,
+                progress_cb=progress_logger,
+                expected_total=None,
             )
 
-    combined = merge_records(cached_records, downloaded)
+        writer.finalize()
+        rows_written, range_start_ts, range_end_ts = writer.get_stats()
+        total_downloaded += rows_written
+
+        chunks = writer.get_chunks()
+        if not chunks:
+            logging.info(
+                "[%s][%s][segment %d/%d] no data downloaded for range %s-%s",
+                exchange,
+                data_type,
+                idx,
+                total_segments,
+                segment_start,
+                segment_end,
+            )
+            continue
+
+        for chunk in chunks:
+            path = chunk.get("path")
+            chunk_rows = chunk.get("rows", 0)
+            chunk_start = chunk.get("start")
+            chunk_end = chunk.get("end")
+            output_paths.append(str(path))
+            output_ranges.append(
+                (
+                    chunk_start if chunk_start is not None else segment_start,
+                    chunk_end if chunk_end is not None else segment_end,
+                )
+            )
+            range_details.append(chunk)
 
     result: Dict[str, object] = {
         "exchange": exchange,
         "data_type": data_type,
-        "used_cached": len(cached_records),
-        "downloaded": len(downloaded),
-        "written": len(combined),
+        "cached_ranges": len(cached_ranges),
+        "downloaded": total_downloaded,
+        "written": total_downloaded,
+        "output_paths": output_paths,
+        "output_ranges": output_ranges,
+        "range_details": range_details,
     }
-
-    if not combined:
-        logging.warning(
-            "No data available for %s %s between %s and %s",
-            exchange,
-            data_type,
-            start_ms,
-            end_ms,
-        )
-        return result
-
-    combined_start = combined[0][0]
-    combined_end = combined[-1][0]
-    result["output_start"] = combined_start
-    result["output_end"] = combined_end
-
-    output_path = build_output_path(
-        base_dir,
-        exchange,
-        data_type,
-        symbol,
-        timeframe if config["is_ohlcv"] else None,
-        combined_start,
-        combined_end,
-    )
-    write_dataset(output_path, data_type, combined)
-    for old_path in cached_files:
-        if old_path.resolve() == output_path.resolve():
-            continue
-        try:
-            old_path.unlink()
-        except FileNotFoundError:
-            continue
-        except OSError as exc:  # pragma: no cover
-            logging.warning("Failed to delete old cache file %s: %s", old_path, exc)
-    result["output_path"] = str(output_path)
     return result
 
 
@@ -582,6 +794,7 @@ def process_exchange(
     start_ms: int,
     end_ms: int,
     allow_from_cache: bool,
+    flush_threshold: int,
 ) -> List[Dict[str, object]]:
     exchange_results: List[Dict[str, object]] = []
     for data_type in data_types:
@@ -595,24 +808,26 @@ def process_exchange(
                 start_ms,
                 end_ms,
                 allow_from_cache,
+                flush_threshold,
             )
             exchange_results.append(result)
             logging.info(
-                "[%s][%s] cached=%s downloaded=%s written=%s",
+                "[%s][%s] cached_ranges=%s downloaded_rows=%s chunks=%s",
                 exchange,
                 data_type,
-                result.get("used_cached"),
+                result.get("cached_ranges"),
                 result.get("downloaded"),
-                result.get("written"),
+                len(result.get("output_paths", [])),
             )
-            if "output_path" in result:
+            for detail in result.get("range_details", []):
                 logging.info(
-                    "[%s][%s] saved to %s (range %s-%s)",
+                    "[%s][%s] chunk saved to %s (rows=%s range=%s-%s)",
                     exchange,
                     data_type,
-                    result["output_path"],
-                    result.get("output_start"),
-                    result.get("output_end"),
+                    detail.get("path"),
+                    detail.get("rows"),
+                    detail.get("start"),
+                    detail.get("end"),
                 )
         except Exception as exc:  # pragma: no cover
             logging.exception("Failed processing %s %s: %s", exchange, data_type, exc)
@@ -630,6 +845,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timeframe", default="1m", help="Timeframe for OHLCV data (default: 1m)")
     parser.add_argument("--allow-from-cache", "--allow_from_cache", dest="allow_from_cache", type=parse_bool, default=True, help="Allow reusing cached files (default: true)")
     parser.add_argument("--output-dir", "--output_dir", dest="output_dir", default=os.path.join(".", "data"), help="Output directory (default: ./data/)")
+    parser.add_argument(
+        "--flush-threshold-bytes",
+        "--flush_threshold_bytes",
+        dest="flush_threshold_bytes",
+        type=int,
+        default=10 * 1024 * 1024,
+        help="Flush partial downloads to disk once buffered CSV size exceeds this threshold in bytes (default: 10485760).",
+    )
     parser.add_argument("--log-level", "--log_level", dest="log_level", default="INFO", help="Logging level (default: INFO)")
     return parser.parse_args()
 
@@ -661,6 +884,9 @@ def main() -> None:
 
     symbol = args.symbol
     base_dir = Path(args.output_dir).resolve()
+    flush_threshold = args.flush_threshold_bytes
+    if flush_threshold is None or flush_threshold <= 0:
+        flush_threshold = 10 * 1024 * 1024
 
     any_ohlcv = any(DATA_TYPE_CONFIG[dt]["is_ohlcv"] for dt in data_types)
     if any_ohlcv:
@@ -670,7 +896,7 @@ def main() -> None:
             raise SystemExit(str(exc))
 
     logging.info(
-        "Starting download: symbol=%s, exchanges=%s, data_types=%s, timeframe=%s, range=%s-%s, cache=%s",
+        "Starting download: symbol=%s, exchanges=%s, data_types=%s, timeframe=%s, range=%s-%s, cache=%s, flush_threshold=%s bytes",
         symbol,
         ",".join(exchanges),
         ",".join(data_types),
@@ -678,6 +904,7 @@ def main() -> None:
         start_ms,
         end_ms,
         args.allow_from_cache,
+        flush_threshold,
     )
 
     results: List[Dict[str, object]] = []
@@ -693,6 +920,7 @@ def main() -> None:
                 start_ms,
                 end_ms,
                 args.allow_from_cache,
+                flush_threshold,
             ): exchange
             for exchange in exchanges
         }
