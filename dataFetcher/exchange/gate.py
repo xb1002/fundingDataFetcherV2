@@ -178,7 +178,7 @@ if __name__ == "__main__":
     import pandas as pd
     import datetime
 
-    start_time = int(datetime.datetime(2025, 10, 25).timestamp() * 1000)
+    start_time = int(datetime.datetime(2025, 10, 1).timestamp() * 1000)
 
     adapter = GateAdapter()
     ohlcv_req = OHLCVRequestParams(
@@ -195,16 +195,25 @@ if __name__ == "__main__":
 
     print("Price OHLCV:")
     price = adapter.fetch_price_ohlcv(ohlcv_req)
-    print(pd.DataFrame(price, columns=["open_time", "open", "high", "low", "close", "volume"]))
+    # print(pd.DataFrame(price, columns=["open_time", "open", "high", "low", "close", "volume"]))
+    df = pd.DataFrame(price, columns=["open_time", "open", "high", "low", "close", "volume"])
+    df['open_time'] = pd.to_datetime(df['open_time'], unit='ms')
+    print(df)
 
     print("\nIndex OHLCV:")
     index_price = adapter.fetch_index_ohlcv(ohlcv_req)
-    print(pd.DataFrame(index_price, columns=["open_time", "open", "high", "low", "close", "volume"]))
+    df = pd.DataFrame(index_price, columns=["open_time", "open", "high", "low", "close", "volume"])
+    df['open_time'] = pd.to_datetime(df['open_time'], unit='ms')
+    print(df)
 
     print("\nPremium Index OHLCV:")
     premium_price = adapter.fetch_premium_index_ohlcv(ohlcv_req)
-    print(pd.DataFrame(premium_price, columns=["open_time", "open", "high", "low", "close", "volume"]))
+    df = pd.DataFrame(premium_price, columns=["open_time", "open", "high", "low", "close", "volume"])
+    df['open_time'] = pd.to_datetime(df['open_time'], unit='ms')
+    print(df)
 
     print("\nFunding History:")
     funding = adapter.fetch_funding_history(funding_req)
-    print(pd.DataFrame(funding, columns=["fundingTime", "fundingRate"]))
+    df = pd.DataFrame(funding, columns=["fundingTime", "fundingRate"])
+    df['fundingTime'] = pd.to_datetime(df['fundingTime'], unit='ms')
+    print(df)

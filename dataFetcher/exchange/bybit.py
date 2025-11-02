@@ -223,13 +223,23 @@ if __name__ == "__main__":
     # This main block is for manual verification when network access is available.
     print("Price OHLCV:")
     price_ohlcv = adapter.fetch_price_ohlcv(ohlcv_req_params)
-    print(pd.DataFrame(price_ohlcv, columns=["open_time", "open", "high", "low", "close", "volume"]))
+    # print(pd.DataFrame(price_ohlcv, columns=["open_time", "open", "high", "low", "close", "volume"]))
+    df = pd.DataFrame(price_ohlcv, columns=["open_time", "open", "high", "low", "close", "volume"])
+    df['open_time'] = pd.to_datetime(df['open_time'], unit='ms')
+    print(df)
+    
     print("\nIndex OHLCV:")
     index_ohlcv = adapter.fetch_index_ohlcv(ohlcv_req_params)
-    print(pd.DataFrame(index_ohlcv, columns=["open_time", "open", "high", "low", "close", "volume"]))
+    df = pd.DataFrame(index_ohlcv, columns=["open_time", "open", "high", "low", "close", "volume"])
+    df['open_time'] = pd.to_datetime(df['open_time'], unit='ms')
+    print(df)
+
     print("\nPremium Index OHLCV:")
     premium_index_ohlcv = adapter.fetch_premium_index_ohlcv(ohlcv_req_params)
-    print(pd.DataFrame(premium_index_ohlcv, columns=["open_time", "open", "high", "low", "close", "volume"]))
+    df = pd.DataFrame(premium_index_ohlcv, columns=["open_time", "open", "high", "low", "close", "volume"])
+    df['open_time'] = pd.to_datetime(df['open_time'], unit='ms')
+    print(df)
+
     print("\nFunding History:")
     funding_history = adapter.fetch_funding_history(funding_req_params)
     # print(pd.DataFrame(funding_history, columns=["fundingTime", "fundingRate"]))
