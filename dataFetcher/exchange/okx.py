@@ -69,7 +69,7 @@ OKX_TIMEFRAME_TO_MS = {
     "1M": 2_592_000_000,
 }
 
-OKX_FUNDING_INTERVAL_MS = 8 * 60 * 60 * 1000
+OKX_FUNDING_INTERVAL_MS = 1 * 60 * 60 * 1000
 
 
 class OKXAdapter(ExchangeAdapter):

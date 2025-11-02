@@ -140,7 +140,7 @@ class BybitAdapter(ExchangeAdapter):
         if req.start_time is not None:
             params["startTime"] = req.start_time
             coverage_limit = params.get("limit", self.req_max_limit["funding_history"])
-            params["endTime"] = req.start_time + coverage_limit * 60 * 60 * 1000 * 8
+            params["endTime"] = req.start_time + coverage_limit * 60 * 60 * 1000 * 1
 
         raw = self.make_request(
             url=f"{self.base_url}{endpoint}",

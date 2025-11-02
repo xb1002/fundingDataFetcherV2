@@ -46,7 +46,7 @@ GATE_REQ_MAX_LIMIT = {
     "funding_history": 200,
 }
 
-GATE_FUNDING_INTERVAL_MS = 8 * 60 * 60 * 1000
+GATE_FUNDING_INTERVAL_MS = 1 * 60 * 60 * 1000
 
 
 class GateAdapter(ExchangeAdapter):
