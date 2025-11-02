@@ -1,4 +1,4 @@
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 if __name__ == "__main__":
     import sys
@@ -46,6 +46,31 @@ OKX_REQ_MAX_LIMIT = {
     "funding_history": 400,
 }
 
+OKX_TIMEFRAME_TO_MS = {
+    "1m": 60_000,
+    "3m": 180_000,
+    "5m": 300_000,
+    "15m": 900_000,
+    "30m": 1_800_000,
+    "1h": 3_600_000,
+    "1H": 3_600_000,
+    "2h": 7_200_000,
+    "2H": 7_200_000,
+    "4h": 14_400_000,
+    "4H": 14_400_000,
+    "6h": 21_600_000,
+    "6H": 21_600_000,
+    "12h": 43_200_000,
+    "12H": 43_200_000,
+    "1d": 86_400_000,
+    "1D": 86_400_000,
+    "1w": 604_800_000,
+    "1W": 604_800_000,
+    "1M": 2_592_000_000,
+}
+
+OKX_FUNDING_INTERVAL_MS = 8 * 60 * 60 * 1000
+
 
 class OKXAdapter(ExchangeAdapter):
     def __init__(self):
@@ -59,14 +84,22 @@ class OKXAdapter(ExchangeAdapter):
             raise ValueError(f"Unsupported timeframe for OKX: {tf}")
         return OKX_TIMEFRAME_MAP[tf]
 
+    def _get_timeframe_ms(self, tf: str) -> Optional[int]:
+        if tf in OKX_TIMEFRAME_TO_MS:
+            return OKX_TIMEFRAME_TO_MS[tf]
+        normalized = tf.lower()
+        return OKX_TIMEFRAME_TO_MS.get(normalized)
+
     def fetch_price_ohlcv(self, req: OHLCVRequestParams) -> List[CandleType]:
         endpoint = self.endpoint_dict["price_ohlcv"]
+        timeframe_ms = self._get_timeframe_ms(req.timeframe)
         params: Dict[str, Any] = {
             "instId": self._map_symbol(req.symbol),
             "bar": self._map_timeframe(req.timeframe),
         }
-        self._apply_time_filters(params, req.start_time)
         self._apply_limit(params, req.limit, "price_ohlcv")
+        effective_limit = params.get("limit")
+        self._apply_time_filters(params, req.start_time, effective_limit, timeframe_ms)
 
         raw = self.make_request(
             url=f"{self.base_url}{endpoint}",
@@ -76,12 +109,14 @@ class OKXAdapter(ExchangeAdapter):
 
     def fetch_index_ohlcv(self, req: OHLCVRequestParams) -> List[CandleType]:
         endpoint = self.endpoint_dict["index_ohlcv"]
+        timeframe_ms = self._get_timeframe_ms(req.timeframe)
         params: Dict[str, Any] = {
             "instId": self._map_index_symbol(req.symbol),
             "bar": self._map_timeframe(req.timeframe),
         }
-        self._apply_time_filters(params, req.start_time)
         self._apply_limit(params, req.limit, "index_ohlcv")
+        effective_limit = params.get("limit")
+        self._apply_time_filters(params, req.start_time, effective_limit, timeframe_ms)
 
         raw = self.make_request(
             url=f"{self.base_url}{endpoint}",
@@ -91,12 +126,14 @@ class OKXAdapter(ExchangeAdapter):
 
     def fetch_premium_index_ohlcv(self, req: OHLCVRequestParams) -> List[CandleType]:
         endpoint = self.endpoint_dict["premium_index_ohlcv"]
+        timeframe_ms = self._get_timeframe_ms(req.timeframe)
         params: Dict[str, Any] = {
             "instId": self._map_symbol(req.symbol),
             "bar": self._map_timeframe(req.timeframe),
         }
-        self._apply_time_filters(params, req.start_time)
         self._apply_limit(params, req.limit, "premium_index_ohlcv")
+        effective_limit = params.get("limit")
+        self._apply_time_filters(params, req.start_time, effective_limit, timeframe_ms)
 
         raw = self.make_request(
             url=f"{self.base_url}{endpoint}",
@@ -125,9 +162,14 @@ class OKXAdapter(ExchangeAdapter):
         params: Dict[str, Any] = {
             "instId": self._map_symbol(req.symbol),
         }
-        if req.start_time is not None:
-            params["after"] = req.start_time
         self._apply_limit(params, req.limit, "funding_history")
+        effective_limit = params.get("limit")
+        self._apply_time_filters(
+            params,
+            req.start_time,
+            effective_limit,
+            OKX_FUNDING_INTERVAL_MS,
+        )
 
         raw = self.make_request(
             url=f"{self.base_url}{endpoint}",
@@ -135,9 +177,22 @@ class OKXAdapter(ExchangeAdapter):
         )
         return self._parse_funding_history(raw)
 
-    def _apply_time_filters(self, params: Dict[str, Any], start_time: Any) -> None:
+    def _apply_time_filters(
+        self,
+        params: Dict[str, Any],
+        start_time: Optional[int],
+        limit: Optional[int],
+        step_ms: Optional[int],
+    ) -> None:
         if start_time is not None:
-            params["after"] = start_time
+            # after 表示该时间戳之前的数据，before 表示该时间戳之后的数据
+            before_ts = start_time - 1 if start_time > 0 else 0
+            params["before"] = before_ts
+            if limit is not None and step_ms:
+                window = int(limit) * step_ms
+                if window <= 0:
+                    window = step_ms
+                params["after"] = start_time + window
 
     def _apply_limit(self, params: Dict[str, Any], limit: Any, key: str) -> None:
         if limit is not None:
@@ -200,15 +255,30 @@ if __name__ == "__main__":
         limit=5,
     )
     
-    # print("Price OHLCV:")
-    # price_ohlcv = adapter.fetch_price_ohlcv(ohlcv_req_params)
+    print("Price OHLCV:")
+    price_ohlcv = adapter.fetch_price_ohlcv(ohlcv_req_params)
     # print(pd.DataFrame(price_ohlcv, columns=["open_time", "open", "high", "low", "close", "volume"]))
-    # print("\nIndex OHLCV:")
-    # index_ohlcv = adapter.fetch_index_ohlcv(ohlcv_req_params)
+    df = pd.DataFrame(price_ohlcv, columns=["open_time", "open", "high", "low", "close", "volume"])
+    df["open_time"] = pd.to_datetime(df["open_time"], unit='ms')
+    print(df)
+
+    print("\nIndex OHLCV:")
+    index_ohlcv = adapter.fetch_index_ohlcv(ohlcv_req_params)
     # print(pd.DataFrame(index_ohlcv, columns=["open_time", "open", "high", "low", "close", "volume"]))
+    df = pd.DataFrame(index_ohlcv, columns=["open_time", "open", "high", "low", "close", "volume"])
+    df["open_time"] = pd.to_datetime(df["open_time"], unit='ms')
+    print(df)
+
     print("\nPremium Index OHLCV:")
     premium_index_ohlcv = adapter.fetch_premium_index_ohlcv(ohlcv_req_params)
-    print(pd.DataFrame(premium_index_ohlcv, columns=["open_time", "open", "high", "low", "close", "volume"]))
-    # print("\nFunding History:")
-    # funding_history = adapter.fetch_funding_history(funding_req_params)
+    # print(pd.DataFrame(premium_index_ohlcv, columns=["open_time", "open", "high", "low", "close", "volume"]))
+    df = pd.DataFrame(premium_index_ohlcv, columns=["open_time", "open", "high", "low", "close", "volume"])
+    df["open_time"] = pd.to_datetime(df["open_time"], unit='ms')
+    print(df)
+
+    print("\nFunding History:")
+    funding_history = adapter.fetch_funding_history(funding_req_params)
     # print(pd.DataFrame(funding_history, columns=["fundingTime", "fundingRate"]))
+    df = pd.DataFrame(funding_history, columns=["fundingTime", "fundingRate"])
+    df["fundingTime"] = pd.to_datetime(df["fundingTime"], unit='ms')
+    print(df)
