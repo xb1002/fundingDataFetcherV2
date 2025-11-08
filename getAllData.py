@@ -7,7 +7,7 @@ import random
 import time
 from typing import Dict, List, Sequence, Tuple
 
-from getSingleData import (
+from dataFetchApi import (
     DATA_TYPE_CONFIG,
     ensure_exchange_markets,
     get_timeframe_ms,
