@@ -29,7 +29,7 @@ TIMEFRAME_TO_MS = {
 }
 
 
-class DataApi:
+class DataLocalApi:
     """API for reading previously downloaded exchange datasets from local storage."""
 
     OHLCV_COLUMNS: Sequence[str] = ("timestamp", "open", "high", "low", "close", "volume")
@@ -331,11 +331,11 @@ class DataApi:
         return max(gap, 1)
 
 
-__all__ = ["DataApi"]
+__all__ = ["DataLocalApi"]
 
 if __name__ == "__main__":
     # For quick manual testing
-    data_api = DataApi()
+    data_api = DataLocalApi()
     df = data_api.funding_rate(
         exchange="binance",
         symbol="0G_USDT",
