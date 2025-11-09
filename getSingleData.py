@@ -3,7 +3,7 @@ import logging
 import os
 from pathlib import Path
 
-from dataFetchApi import fetch_symbol_data, parse_bool
+from fundingDataFetchPackage.fundingDataFetchPackage.dataFetchApi import fetch_symbol_data, parse_bool
 
 
 def parse_args() -> argparse.Namespace:
